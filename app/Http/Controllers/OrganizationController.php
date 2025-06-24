@@ -28,12 +28,14 @@ use Illuminate\Support\Facades\Hash;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Storage;
 
-class OrganizationController extends Controller {
+class OrganizationController extends Controller
+{
 
 
-    public function signup(Request $request) {
+    public function signup(Request $request)
+    {
         Log::info('Request data:', $request->all());
-    
+
         $validator = Validator::make($request->all(), [
             'name' => 'required|string|max:100',
             'email' => 'required|email|unique:lmd_users,email',
@@ -47,27 +49,27 @@ class OrganizationController extends Controller {
             'latitude' => 'nullable|numeric',
             'longitude' => 'nullable|numeric',
             'cnic' => 'required|string|max:15|unique:lmd_users,cnic',
-            'profile_picture' => 'nullable|file|mimes:jpeg,png,jpg|max:10240', 
+            'profile_picture' => 'nullable|file|mimes:jpeg,png,jpg|max:10240',
         ]);
-    
+
         if ($validator->fails()) {
             return response()->json([
                 'success' => false,
                 'errors' => $validator->errors()
             ], 422);
         }
-    
+
         $validated = $validator->validated();
-    
+
         DB::beginTransaction();
-    
+
         try {
             // Profile picture upload
             $profilePicturePath = null;
             if ($request->hasFile('profile_picture')) {
                 $profilePicturePath = $request->file('profile_picture')->store('organizationImages', 'public');
             }
-    
+
             // Insert into `lmd_users` table
             $userId = DB::table('lmd_users')->insertGetId([
                 'name' => $validated['name'],
@@ -78,12 +80,12 @@ class OrganizationController extends Controller {
                 'cnic' => $validated['cnic'] ?? null,
                 'profile_picture' => $profilePicturePath,
             ]);
-    
+
             // Insert into `organizations` table
             DB::table('organizations')->insert([
                 'lmd_users_ID' => $userId,
             ]);
-    
+
             // Insert into `addresses` table
             DB::table('addresses')->insert([
                 'address_type' => $validated['address_type'],
@@ -95,7 +97,7 @@ class OrganizationController extends Controller {
                 'longitude' => $validated['longitude'],
                 'lmd_users_ID' => $userId,
             ]);
-    
+
             DB::commit();
             return response()->json([
                 'message' => 'Organization signed up successfully',
@@ -110,12 +112,12 @@ class OrganizationController extends Controller {
             ], 500);
         }
     }
-    
-    
+
+
     public function getDeliveryBoysByOrganization($organization_id)
     {
         $baseUrl = url('/'); // e.g., http://yourdomain.com
-    
+
         $deliveryBoys = DB::table('deliveryboys')
             ->join('lmd_users', 'deliveryboys.lmd_users_ID', '=', 'lmd_users.id')
             ->leftJoin('addresses', 'addresses.lmd_users_ID', '=', 'lmd_users.id')
@@ -154,190 +156,189 @@ class OrganizationController extends Controller {
                 'addresses.longitude'
             )
             ->get();
-    
+
         return response()->json([
             'delivery_boys' => $deliveryBoys,
         ], 200);
     }
-    
 
-   
-    
+
+
+
     public function getPendingVendorRequests($organizationId)
-{
-    $pending = DB::table('vendororganization')
-        ->join('vendors', 'vendororganization.vendor_ID', '=', 'vendors.id')
-        ->join('organizations', 'vendororganization.organization_ID', '=', 'organizations.id')
-        ->join('lmd_users as vendor_user', 'vendors.lmd_users_ID', '=', 'vendor_user.id')
-        ->join('lmd_users as org_user', 'organizations.lmd_users_ID', '=', 'org_user.id')
-        ->where('vendororganization.organization_ID', $organizationId)
-        ->select(
-            'vendororganization.id as request_id',
-            'vendororganization.approval_status',
-            'vendororganization.status',
+    {
+        $pending = DB::table('vendororganization')
+            ->join('vendors', 'vendororganization.vendor_ID', '=', 'vendors.id')
+            ->join('organizations', 'vendororganization.organization_ID', '=', 'organizations.id')
+            ->join('lmd_users as vendor_user', 'vendors.lmd_users_ID', '=', 'vendor_user.id')
+            ->join('lmd_users as org_user', 'organizations.lmd_users_ID', '=', 'org_user.id')
+            ->where('vendororganization.organization_ID', $organizationId)
+            ->select(
+                'vendororganization.id as request_id',
+                'vendororganization.approval_status',
+                'vendororganization.status',
 
-            'vendors.id as vendor_id',
-            'vendor_user.name as vendor_name',
-            'vendor_user.email as vendor_email',
-            'vendor_user.phone_no as vendor_phone', // ✅ fixed phone_no
+                'vendors.id as vendor_id',
+                'vendor_user.name as vendor_name',
+                'vendor_user.email as vendor_email',
+                'vendor_user.phone_no as vendor_phone', // ✅ fixed phone_no
 
-            'organizations.id as organization_id',
-            // ❌ removed: 'organizations.name as organization_name',
-            'org_user.name as org_user_name',
-            'org_user.email as org_user_email'
-        )
-        ->get();
+                'organizations.id as organization_id',
+                // ❌ removed: 'organizations.name as organization_name',
+                'org_user.name as org_user_name',
+                'org_user.email as org_user_email'
+            )
+            ->get();
 
-    return response()->json(['pending_requests' => $pending], 200);
-}
-
-    
-
-public function acceptVendorRequest($requestId)
-{
-    // Check for pending rejection reasons before approval
-    $hasPendingReasons = DB::table('vendororganizationrejectionreasons')
-        ->where('vendororganization_ID', $requestId)
-        ->where('status', 'Pending')
-        ->exists();
-
-    if ($hasPendingReasons) {
-        return response()->json([
-            'message' => 'Cannot approve request with pending rejection reasons.'
-        ], 400);
+        return response()->json(['pending_requests' => $pending], 200);
     }
 
-    DB::table('vendororganization')
-        ->where('id', $requestId)
-        ->update(['approval_status' => 'approved']);
 
-    return response()->json(['message' => 'Vendor request accepted'], 200);
-}
 
-// public function rejectVendorRequest(Request $request, $requestId)
-// {
-//     $request->validate([
-//         'reason' => 'required|string'
-//     ]);
+    public function acceptVendorRequest($requestId)
+    {
+        // Check for pending rejection reasons before approval
+        $hasPendingReasons = DB::table('vendororganizationrejectionreasons')
+            ->where('vendororganization_ID', $requestId)
+            ->where('status', 'Pending')
+            ->exists();
 
-//     // Update status to rejected
-//     DB::table('vendororganization')
-//         ->where('id', $requestId)
-//         ->update(['status' => 'rejected']);
-
-//     // Save rejection reason
-//     DB::table('vendorrejectionreasons')->insert([
-//         'vendororganization_ID' => $requestId,
-//         'reason' => $request->reason,
-//         'status' => 'pending'
-//     ]);
-
-//     return response()->json(['message' => 'Vendor request rejected with reason saved'], 200);
-// }
-public function rejectVendorRequest(Request $request, $requestId)
-{
-    $request->validate([
-        'rejection_reasons' => 'required|array',
-        'rejection_reasons.*' => 'string|max:255',
-    ]);
-
-    $vendorOrg = DB::table('vendororganization')->where('id', $requestId)->first();
-
-    if (!$vendorOrg || $vendorOrg->approval_status !== 'pending') {
-        return response()->json(['message' => 'Request not found or already processed.'], 404);
-    }
-
-    DB::beginTransaction();
-
-    try {
-        foreach ($request->rejection_reasons as $reason) {
-            DB::table('vendororganizationrejectionreasons')->insert([
-                'vendororganization_ID' => $requestId,
-                'reason' => $reason,
-                'status' => 'pending',
-            ]);
+        if ($hasPendingReasons) {
+            return response()->json([
+                'message' => 'Cannot approve request with pending rejection reasons.'
+            ], 400);
         }
 
-        DB::table('vendororganization')->where('id', $requestId)->update([
-            'approval_status' => 'rejected'
+        DB::table('vendororganization')
+            ->where('id', $requestId)
+            ->update(['approval_status' => 'approved']);
+
+        return response()->json(['message' => 'Vendor request accepted'], 200);
+    }
+
+    // public function rejectVendorRequest(Request $request, $requestId)
+    // {
+    //     $request->validate([
+    //         'reason' => 'required|string'
+    //     ]);
+
+    //     // Update status to rejected
+    //     DB::table('vendororganization')
+    //         ->where('id', $requestId)
+    //         ->update(['status' => 'rejected']);
+
+    //     // Save rejection reason
+    //     DB::table('vendorrejectionreasons')->insert([
+    //         'vendororganization_ID' => $requestId,
+    //         'reason' => $request->reason,
+    //         'status' => 'pending'
+    //     ]);
+
+    //     return response()->json(['message' => 'Vendor request rejected with reason saved'], 200);
+    // }
+    public function rejectVendorRequest(Request $request, $requestId)
+    {
+        $request->validate([
+            'rejection_reasons' => 'required|array',
+            'rejection_reasons.*' => 'string|max:255',
         ]);
 
-        DB::commit();
+        $vendorOrg = DB::table('vendororganization')->where('id', $requestId)->first();
 
-        return response()->json(['message' => 'Vendor request rejected with reasons saved'], 200);
+        if (!$vendorOrg || $vendorOrg->approval_status !== 'pending') {
+            return response()->json(['message' => 'Request not found or already processed.'], 404);
+        }
 
-    } catch (\Exception $e) {
-        DB::rollBack();
-        return response()->json(['message' => 'Failed to reject request.', 'error' => $e->getMessage()], 500);
-    }
-}
+        DB::beginTransaction();
 
-// public function getRejectionReasons($organizationId)
-// {
-//     $reasons = DB::table('vendorrejectionreasons')
-//         ->join('vendororganization', 'vendorrejectionreasons.vendororganization_ID', '=', 'vendororganization.id')
-//         ->where('vendororganization.organization_ID', $organizationId)
-//         ->select(
-//             'vendorrejectionreasons.id',
-//             'vendorrejectionreasons.reason',
-//             'vendorrejectionreasons.status',
-//             'vendororganization.vendor_ID',
-//             'vendororganization.organization_ID'
-//         )
-//         ->get();
+        try {
+            foreach ($request->rejection_reasons as $reason) {
+                DB::table('vendororganizationrejectionreasons')->insert([
+                    'vendororganization_ID' => $requestId,
+                    'reason' => $reason,
+                    'status' => 'pending',
+                ]);
+            }
 
-//     return response()->json(['rejection_reasons' => $reasons], 200);
-// }
-public function getRejectionReasons($organizationId)
-{
-    $reasons = DB::table('vendororganizationrejectionreasons')
-        ->join('vendororganization', 'vendororganizationrejectionreasons.vendororganization_ID', '=', 'vendororganization.id')
-        ->where('vendororganization.organization_ID', $organizationId)
-        ->select(
-            'vendororganizationrejectionreasons.id',
-            'vendororganizationrejectionreasons.reason',
-            'vendororganizationrejectionreasons.status',
-            'vendororganization.vendor_ID',
-            'vendororganization.organization_ID'
-        )
-        ->get();
+            DB::table('vendororganization')->where('id', $requestId)->update([
+                'approval_status' => 'rejected'
+            ]);
 
-    if ($reasons->isEmpty()) {
-        return response()->json(['message' => 'No rejection reasons found.'], 404);
+            DB::commit();
+
+            return response()->json(['message' => 'Vendor request rejected with reasons saved'], 200);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json(['message' => 'Failed to reject request.', 'error' => $e->getMessage()], 500);
+        }
     }
 
-    return response()->json(['rejection_reasons' => $reasons], 200);
-}
+    // public function getRejectionReasons($organizationId)
+    // {
+    //     $reasons = DB::table('vendorrejectionreasons')
+    //         ->join('vendororganization', 'vendorrejectionreasons.vendororganization_ID', '=', 'vendororganization.id')
+    //         ->where('vendororganization.organization_ID', $organizationId)
+    //         ->select(
+    //             'vendorrejectionreasons.id',
+    //             'vendorrejectionreasons.reason',
+    //             'vendorrejectionreasons.status',
+    //             'vendororganization.vendor_ID',
+    //             'vendororganization.organization_ID'
+    //         )
+    //         ->get();
 
-// public function correctRejectionReason($reasonId)
-// {
-//     DB::table('vendorrejectionreasons')
-//         ->where('id', $reasonId)
-//         ->update(['status' => 'corrected']);
+    //     return response()->json(['rejection_reasons' => $reasons], 200);
+    // }
+    public function getRejectionReasons($organizationId)
+    {
+        $reasons = DB::table('vendororganizationrejectionreasons')
+            ->join('vendororganization', 'vendororganizationrejectionreasons.vendororganization_ID', '=', 'vendororganization.id')
+            ->where('vendororganization.organization_ID', $organizationId)
+            ->select(
+                'vendororganizationrejectionreasons.id',
+                'vendororganizationrejectionreasons.reason',
+                'vendororganizationrejectionreasons.status',
+                'vendororganization.vendor_ID',
+                'vendororganization.organization_ID'
+            )
+            ->get();
 
-//     return response()->json(['message' => 'Rejection reason marked as corrected'], 200);
-// }
-public function correctRejectionReason($reasonId)
-{
-    $rejection = DB::table('vendororganizationrejectionreasons')->where('id', $reasonId)->first();
+        if ($reasons->isEmpty()) {
+            return response()->json(['message' => 'No rejection reasons found.'], 404);
+        }
 
-    if (!$rejection || $rejection->status !== 'Pending') {
-        return response()->json(['message' => 'Rejection reason not found or already corrected.'], 404);
+        return response()->json(['rejection_reasons' => $reasons], 200);
     }
 
-    DB::table('vendororganizationrejectionreasons')
-        ->where('id', $reasonId)
-        ->update([
-            'status' => 'Corrected',
-        ]);
+    // public function correctRejectionReason($reasonId)
+    // {
+    //     DB::table('vendorrejectionreasons')
+    //         ->where('id', $reasonId)
+    //         ->update(['status' => 'corrected']);
 
-    return response()->json(['message' => 'Rejection reason marked as corrected'], 200);
-}
+    //     return response()->json(['message' => 'Rejection reason marked as corrected'], 200);
+    // }
+    public function correctRejectionReason($reasonId)
+    {
+        $rejection = DB::table('vendororganizationrejectionreasons')->where('id', $reasonId)->first();
+
+        if (!$rejection || $rejection->status !== 'Pending') {
+            return response()->json(['message' => 'Rejection reason not found or already corrected.'], 404);
+        }
+
+        DB::table('vendororganizationrejectionreasons')
+            ->where('id', $reasonId)
+            ->update([
+                'status' => 'Corrected',
+            ]);
+
+        return response()->json(['message' => 'Rejection reason marked as corrected'], 200);
+    }
 
     public function getOrganizationData($id)
     {
         $baseUrl = url('/'); // Base URL like http://your-domain.com
-    
+
         // Join organizations with lmd_users where lmd_user_role is 'organization'
         $organizationData = DB::table('organizations')
             ->join('lmd_users', 'organizations.lmd_users_ID', '=', 'lmd_users.id')
@@ -358,13 +359,63 @@ public function correctRejectionReason($reasonId)
             ->where('lmd_users.id', $id)
             ->where('lmd_users.lmd_user_role', 'organization')
             ->first();
-    
+
         if ($organizationData) {
             return response()->json($organizationData, 200);
         }
-    
+
         return response()->json(['error' => 'Organization not found'], 404);
     }
-    
+    public function getOrganizationStats($organizationId)
+    {
+        // 1. Validate organization
+        $organization = DB::table('organizations')
+            ->where('id', $organizationId)
+            ->first();
 
+        // if (!$organization) {
+        //     return response()->json(['error' => 'Organization not found'], 404);
+        // }
+
+        // 2. Total delivery boys linked directly via organization_ID
+        $deliveryBoyIds = DB::table('deliveryboys')
+            ->where('organization_ID', $organizationId)
+            ->pluck('id');
+
+        $totalDeliveryBoys = $deliveryBoyIds->count();
+
+        // 3. Vendor IDs linked via vendororganization table
+        $vendorIds = DB::table('vendororganization')
+            ->where('organization_ID', $organizationId)
+            ->pluck('vendor_ID');
+
+        $totalVendors = $vendorIds->count();
+
+        // 4. Count vendors by approval status
+        $vendorApprovalCounts = DB::table('vendors')
+            ->whereIn('id', $vendorIds)
+            ->select('approval_status', DB::raw('count(*) as count'))
+            ->groupBy('approval_status')
+            ->pluck('count', 'approval_status');
+
+        $vendorStatusCounts = [
+            'pending' => $vendorApprovalCounts['pending'] ?? 0,
+            'approved' => $vendorApprovalCounts['approved'] ?? 0,
+            'rejected' => $vendorApprovalCounts['rejected'] ?? 0,
+        ];
+
+        // 5. Total delivered suborders by those delivery boys
+        $totalDeliveredSuborders = DB::table('suborders')
+            ->whereIn('deliveryboys_ID', $deliveryBoyIds)
+            ->where('status', 'delivered')
+            ->count();
+
+        // 6. Return summary
+        return response()->json([
+            'total_delivery_boys' => $totalDeliveryBoys,
+            'total_vendors' => $totalVendors,
+            'vendor_approval_status' => $vendorStatusCounts,
+            'total_delivered_orders' => $totalDeliveredSuborders
+        ]);
+    }
 }

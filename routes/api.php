@@ -22,7 +22,9 @@ Route::put('/customers/{id}', [CustomerController::class, 'updateCustomer']);
 Route::delete('/customers/{id}', [CustomerController::class, 'deleteCustomer']);
 Route::get('/customers/{id}/orders', [CustomerController::class, 'getCustomerOrders']);
 Route::get('/orders/{id}/details', [CustomerController::class, 'getOrderDetails']);
-Route::post('/itemrating', [CustomerController::class, 'addItemRating']);
+Route::get('/vendor-order-details/{suborderId}', [CustomerController::class, 'fetchOrderDetailsFromapiVendor']);
+
+//Route::post('/itemrating', [CustomerController::class, 'addItemRating']);
 Route::post('/customers/{id}/add-address', [CustomerController::class, 'addAddress']);
 Route::put('/customers/{customerId}/addresses/{addressId}', [CustomerController::class, 'updateAddress']);
 Route::delete('/customers/{customerId}/addresses/{addressId}', [CustomerController::class, 'deleteAddress']);
@@ -34,8 +36,15 @@ Route::get('customer/main-screen/{customerID}', [CustomerController::class, 'get
 Route::get('vendor/{vendorId}/shop/{shopId}/branch/{branchId}/menu', [CustomerController::class, 'getVendorShopBranchMenu']);
 Route::get('/suborders/{suborderId}/live-tracking', [CustomerController::class, 'getLiveTracking']);
 
+
+Route::post('/customer/rate-delivery-boy', [CustomerController::class, 'rateDeliveryBoy']);
+Route::get('/suborders/{suborderId}/detailsForRating', [CustomerController::class, 'getSuborderDetailsForRating']);
+Route::get('/suborders/{suborderId}/detailsForRatingStatus', [CustomerController::class, 'getRatingsStatusForSuborder']);
+Route::post('/itemrating', [CustomerController::class, 'addItemRating']);
+
+
 Route::post('/customers/place-order', [CustomerController::class, 'placeOrder']);
-Route::POST('/customer/place-order', [CustomerController::class, 'placeOrder']);
+//Route::POST('/customer/place-order', [CustomerController::class, 'placeOrder']);
 Route::put('/customers/orders/{orderId}/cancel', [CustomerController::class, 'cancelOrder']);
 Route::patch('/customer/order/{suborderId}/confirm-delivery', [CustomerController::class, 'confirmOrderDelivery']);
 Route::post('/customer/confirm-payment/{suborderId}', [CustomerController::class, 'confirmPaymentByCustomer']);
@@ -90,7 +99,7 @@ Route::post('/deliveryboy/update-live-tracking', [DeliveryBoyController::class, 
 //Order
 Route::get('/deliveryboy/ready-suborders/{id}', [DeliveryBoyController::class, 'getReadySubordersForDeliveryBoy']);
 
-Route::get('/deliveryboy/ready-suborders', [DeliveryBoyController::class, 'getReadySubordersForDeliveryBoy']);
+//Route::get('/deliveryboy/ready-suborders', [DeliveryBoyController::class, 'getReadySubordersForDeliveryBoy']);
 //Route::post('/suborders/update-status', [DeliveryBoyController::class, 'updateSuborderStatus']);
 Route::post('/deliveryboy/{deliveryBoyId}/accept-order/{suborderId}', [DeliveryBoyController::class, 'acceptOrder']);
 Route::get('/deliveryboy/{id}/assigned-suborders', [DeliveryBoyController::class, 'getAssignedSubordersForDeliveryBoy']);
@@ -121,8 +130,10 @@ Route::get('/shop/{shopId}/branches', [VendorController::class, 'getBranchesBySh
 Route::put('/Vendor/branches/{id}/togglestatus', [VendorController::class, 'toggleBranchStatus']);
 //vendor order and statuses...
 Route::get('/vendors/{vendorId}/shops/{shopId}/branches/{branchId}/suborders', [VendorController::class, 'getSubOrders']);
-Route::get('/suborders/{suborderId}/details', [VendorController::class, 'getOrderedItemInformation']);
+//Route::get('/suborders/{suborderId}/details', [VendorController::class, 'getOrderedItemInformation']);
 Route::get('/vendor/{vendorId}/suborders', [VendorController::class, 'getSubOrdersByVendor']);
+Route::get('/vendor/ordered-items/{vendorId}/{shopId}/{branchId}/{suborderId}', [VendorController::class, 'getOrderedItemInformation']);
+
 
 //Route::put('/suborders/status', [VendorController::class, 'updateSuborderStatus']);
 Route::patch('/vendor/order/{suborderId}/in-progress', [VendorController::class, 'markInProgress']);
@@ -188,16 +199,30 @@ Route::get('/admin/branches', [AdminController::class, 'getAllBranches']);
 Route::get('/admin/api-vendors', [AdminController::class, 'getApiVendorsWithUsers']);
 Route::get('/admin/vendor/{vendorId}/shops', [AdminController::class, 'getShopsAndCategories']);
 Route::get('/admin/vendor/{vendorId}/shop/{shopId}/branches', [AdminController::class, 'getBranches']);
-
-Route::post('/admin/branch/add-api-vendor', [AdminController::class, 'addApiVendor']);
-Route::post('/admin/vendor/add-api-method', [AdminController::class, 'addApiMethod']);
-Route::get('/admin/apivendor/{apivendor_id}/methods', [AdminController::class, 'getMethodsByApiVendorId']);
+Route::get('/admin/api-vendor/{branchId}', [AdminController::class, 'getApiVendorByBranch']);
+Route::post('/admin/apivendor/store', [AdminController::class, 'storeApiVendor']);
+Route::put('/admin/apivendor/{id}', [AdminController::class, 'updateApiVendor']);
+Route::get('/admin/apimethod-templates', [AdminController::class, 'getStandardApiMethods']);
+Route::post('/admin/apivendor/{apivendorId}/methods', [AdminController::class, 'saveApiMethods']);
+Route::put('/admin/apimethods/{id}', [AdminController::class, 'updateApiMethod']);
+Route::get('/admin/apivendor/{apivendorId}/methods', [AdminController::class, 'getApiMethodsByVendor']);
+Route::post('/admin/mappings/save', [AdminController::class, 'saveVariableMappings']);
+Route::put('/admin/mapping/{id}', [AdminController::class, 'updateVariableMapping']);
+Route::get('/variables', [AdminController::class, 'getAllVariables']);
+Route::get('/mappings/{branchId}/{apivendorId}', [AdminController::class, 'getMappings']);
+Route::get('/integration-details/{branchId}', [AdminController::class, 'getIntegrationDetails']);
 Route::post('/admin/add-variable', [AdminController::class, 'addVariable']);
-Route::post('/admin/branch/add-mapping', [AdminController::class, 'addMapping']);
+Route::post('/admin/save-new-api-methods/{apivendorId?}', [AdminController::class, 'saveNewApiMethods']);
+
+// Route::post('/admin/branch/add-api-vendor', [AdminController::class, 'addApiVendor']);
+// Route::post('/admin/vendor/add-api-method', [AdminController::class, 'addApiMethod']);
+// Route::get('/admin/apivendor/{apivendor_id}/methods', [AdminController::class, 'getMethodsByApiVendorId']);
+
+// Route::post('/admin/branch/add-mapping', [AdminController::class, 'addMapping']);
+
 //ADMINROUTES FOR COURIERITEM
 Route::post('/admin/addcourieritemcategory', [AdminController::class, 'addCourierItemCategory']);
 Route::post('/admin/addcourieritem', [AdminController::class, 'addCourierItem']);
-
 
 
 
@@ -225,5 +250,18 @@ Route::post('/suborders/{suborderId}/status', [VendorController::class, 'updateS
 Route::get('/vendor/{vendorId}/available-organizations', [VendorController::class, 'getAvailableOrganizationsForVendor']);
 
 
+//Stats for  Mai screen Infos
+Route::get('vendor/{vendorId}/summary', [VendorController::class, 'getVendorSummary']);
+Route::get('/organizations/{id}/organization-stats', [OrganizationController::class, 'getOrganizationStats']);
+Route::get('/admin/admin-stats', [AdminController::class, 'getAdminStats']);
 
+Route::post('/customer/get-stock-for-items', [CustomerController::class, 'getStockForItems']);
+
+Route::prefix('vehicle-categories')->group(function () {
+    Route::post('/', [DeliveryBoyController::class, 'addVehicleCategory']); // POST /api/vehicle-categories
+    Route::get('/', [DeliveryBoyController::class, 'getVehicleCategory']);  // GET  /api/vehicle-categories
+});
+
+
+Route::post('/vendor/update-suborder-status', [VendorController::class, 'updateSuborderStatusByVendorOrderId']);
 

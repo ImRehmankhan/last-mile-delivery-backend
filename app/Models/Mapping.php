@@ -13,6 +13,6 @@ class Mapping extends Model
         'apivendor_ID',
         'branch_ID',
     ];
-    public $timestamps = false;
+    public $timestamps = true;
 }
 

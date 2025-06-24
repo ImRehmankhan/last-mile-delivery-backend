@@ -427,7 +427,7 @@ class DeliveryBoyController extends Controller {
                 ],
             ], 200);
     
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             DB::rollBack();
             Log::error("Failed to update delivery boy status for ID: $id. Error: " . $e->getMessage());
             return response()->json(['message' => 'Failed to update delivery boy status.', 'error' => $e->getMessage()], 500);
@@ -436,11 +436,12 @@ class DeliveryBoyController extends Controller {
     
     
 
-    public function addVehicle( Request $request, $deliveryBoyId ) {
+     public function addVehicle( Request $request, $deliveryBoyId ) {
         $validated = $request->validate( [
             'plate_no' => 'required|string|max:20|unique:vehicles',
             'color' => 'nullable|string|max:50',
-            'vehicle_type' => 'required|string|max:50',
+            // 'vehicle_type' => 'required|string|max:50',
+            'vehicle_type' => 'required|exists:vehicle_categories,id', // ID check
             'model' => 'nullable|string|max:50',
         ] );
 
@@ -799,11 +800,11 @@ public function getReadySubordersForDeliveryBoy($id)
         ->join('area', 'branches.area_ID', '=', 'area.id')
         ->join('city', 'area.city_ID', '=', 'city.id')
         ->join('orders', 'suborders.orders_ID', '=', 'orders.id')
-        ->join('customers', 'orders.customers_ID', '=', 'customers.id') // ✅ Fixed join
-        ->join('lmd_users', 'customers.lmd_users_ID', '=', 'lmd_users.id') // ✅ Fixed join
+        // ->join('customers', 'orders.customers_ID', '=', 'customers.lmd_users_ID')
+        ->join('customers', 'orders.customers_ID', '=', 'customers.id')
+        ->join('lmd_users', 'customers.lmd_users_ID', '=', 'lmd_users.id')
         ->join('addresses', 'orders.addresses_ID', '=', 'addresses.id')
         ->where('suborders.status', 'ready')
-        ->orderByDesc(column: 'orders.order_date')
         ->select(
             'suborders.id as suborder_id',
             'suborders.vendor_type',
@@ -818,8 +819,10 @@ public function getReadySubordersForDeliveryBoy($id)
             'suborders.vendor_ID',
             'suborders.shop_ID',
             'suborders.branch_ID',
+
             'orders.order_date',
             'orders.addresses_ID',
+
             'shops.name as shop_name',
             'branches.description as branch_name',
             DB::raw("CASE 
@@ -827,17 +830,20 @@ public function getReadySubordersForDeliveryBoy($id)
                         THEN NULL 
                         ELSE CONCAT('$baseUrl/storage/', branches.branch_picture) 
                     END as branch_picture"),
+
             'branches.latitude as pickup_latitude',
             'branches.longitude as pickup_longitude',
             'area.name as pickup_area',
             'city.name as pickup_city',
+
             'lmd_users.name as customer_name',
             'lmd_users.phone_no as customer_phone',
             DB::raw("CASE 
-                        WHEN lmd_users.profile_picture IS NULL OR lmd_users.profile_picture = '' 
-                        THEN NULL 
-                        ELSE CONCAT('$baseUrl/storage/', lmd_users.profile_picture) 
-                    END as customer_picture"),
+                WHEN lmd_users.profile_picture IS NULL OR lmd_users.profile_picture = '' 
+                THEN NULL 
+                ELSE CONCAT('$baseUrl/storage/', lmd_users.profile_picture) 
+            END as customer_picture"),
+
             'addresses.street as delivery_area',
             'addresses.city as delivery_city',
             'addresses.latitude as delivery_latitude',
@@ -896,6 +902,7 @@ public function getReadySubordersForDeliveryBoy($id)
     ], 200);
 }
 
+
 public function acceptOrder($deliveryBoyId, $suborderId)
 {
     try {
@@ -909,17 +916,205 @@ public function acceptOrder($deliveryBoyId, $suborderId)
     }
 
     try {
-        $deliveryBoy = DeliveryBoy::findOrFail($deliveryBoyId);
-    } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-        return response()->json(['error' => 'Delivery boy not found.'], 404);
+        $deliveryBoy = DB::table('deliveryboys')->where('id', $deliveryBoyId)->first();
+        if (!$deliveryBoy) {
+            return response()->json(['error' => 'Delivery boy not found.'], 404);
+        }
+
+        $lmdUser = DB::table('lmd_users')->where('id', $deliveryBoy->lmd_users_ID)->first();
+        if (!$lmdUser) {
+            return response()->json(['error' => 'LMD user not found for delivery boy.'], 404);
+        }
+    } catch (Exception $e) {
+        return response()->json(['error' => 'Failed to fetch delivery boy or LMD user.'], 500);
     }
 
+    $vendor = DB::table('vendors')->where('id', $suborder->vendor_ID)->first();
+
+    if (!$vendor) {
+        return response()->json(['error' => 'Vendor not found.'], 404);
+    }
+
+    if ($vendor->vendor_type === 'API Vendor') {
+        $apiVendor = DB::table('vendors')
+            ->join('shops', 'vendors.id', '=', 'shops.vendors_ID')
+            ->join('branches', 'shops.id', '=', 'branches.shops_ID')
+            ->join('apivendor', 'branches.id', '=', 'apivendor.branches_ID')
+            ->where('vendors.id', $suborder->vendor_ID)
+            ->where('branches.id', $suborder->branch_ID)
+            ->select('apivendor.id as apivendor_ID', 'apivendor.api_base_url', 'apivendor.api_key', 'apivendor.response_format')
+            ->first();
+
+        if (!$apiVendor) {
+            return response()->json(['error' => 'API vendor configuration not found.'], 404);
+        }
+
+        $apiMethod = DB::table('apimethods')
+            ->where('apivendor_ID', $apiVendor->apivendor_ID)
+            ->where('method_name', 'mark-assigned')
+            ->first();
+
+        if (!$apiMethod) {
+            return response()->json(['error' => 'API method mark-assigned not found.'], 404);
+        }
+
+        if (!$suborder->vendor_order_id) {
+            return response()->json(['error' => 'Vendor order ID missing for suborder.'], 400);
+        }
+
+        $endpoint = str_replace('{id}', $suborder->vendor_order_id, $apiMethod->endpoint);
+        $fullUrl = rtrim($apiVendor->api_base_url, '/') . '/' . ltrim($endpoint, '/');
+
+
+        $mappedDeliveryBoyId = DB::table('mapping')
+        ->join('variables', 'mapping.variable_ID', '=', 'variables.id')
+        ->where('mapping.apivendor_ID', $apiVendor->apivendor_ID)
+        ->where('variables.tags', 'delivery_boy_id')  // use variable_name, not tags
+        ->value('mapping.api_values') ?? 'delivery_boy_id';
+    
+    $mappedName = DB::table('mapping')
+        ->join('variables', 'mapping.variable_ID', '=', 'variables.id')
+        ->where('mapping.apivendor_ID', $apiVendor->apivendor_ID)
+        ->where('variables.tags', 'name')
+        ->value('mapping.api_values') ?? 'delivery_boy_name';
+    
+    $mappedContact = DB::table('mapping')
+        ->join('variables', 'mapping.variable_ID', '=', 'variables.id')
+        ->where('mapping.apivendor_ID', $apiVendor->apivendor_ID)
+        ->where('variables.tags', 'phone_no')
+        ->value('mapping.api_values') ?? 'delivery_boy_contact';
+    
+    $mappedImage = DB::table('mapping')
+        ->join('variables', 'mapping.variable_ID', '=', 'variables.id')
+        ->where('mapping.apivendor_ID', $apiVendor->apivendor_ID)
+        ->where('variables.tags', 'profile_picture')
+        ->value('mapping.api_values') ?? 'delivery_boy_image';
+    
+
+        // Prepare data
+        $data = [
+            $mappedDeliveryBoyId => $deliveryBoyId,
+            $mappedName => $lmdUser->name,
+            $mappedContact => $lmdUser->phone_no,
+            // $mappedImage => asset('storage/' . $lmdUser->profile_picture),
+        ];
+    
+        $imagePath = storage_path('app/public/' . $lmdUser->profile_picture);
+
+if (!file_exists($imagePath)) {
+    return response()->json(['error' => 'Profile picture file not found.'], 500);
+}
+
+try {
+    $httpMethod = strtolower($apiMethod->http_method);
+
+    $request = Http::asMultipart();
+    
+    // Attach the image file
+    $request->attach(
+        $mappedImage,
+        file_get_contents($imagePath),
+        basename($imagePath)
+    );
+    
+    // Send the request with form fields
+    $response = match ($httpMethod) {
+        'post' => $request->post($fullUrl, $data),
+        'put' => $request->put($fullUrl, $data),
+        default => null,
+    };
+    
+    if (!$response || !$response->successful()) {
+        return response()->json([
+            'error' => 'Vendor API failed. Response: ' . ($response ? $response->body() : 'null')
+        ], 500);
+    }
+} catch (Exception $e) {
+    return response()->json(['error' => 'Connection to vendor API failed.'], 500);
+}
+
+    }
+
+    // Local status update
     $suborder->status = 'assigned';
     $suborder->deliveryboys_ID = $deliveryBoyId;
     $suborder->save();
 
-    return response()->json(['message' => 'Order accepted successfully.']);
+
+
+
+
+
+try {
+    // Get pickup (branch) location
+    $pickup = DB::table('branches')
+        ->where('id', $suborder->branch_ID)
+        ->select('latitude', 'longitude')
+        ->first();
+
+
+    // Get drop (customer address) location
+    $order = DB::table('orders')->where('id', $suborder->orders_ID)->first();
+
+    $address = DB::table('addresses')
+        ->where('id', $order->addresses_ID)
+        ->select('latitude', 'longitude')
+        ->first();
+
+    if (!$pickup || !$address) {
+        return response()->json(['error' => 'Pickup or drop location not found.'], 500);
+    }
+
+    // Calculate distance using Haversine formula
+    $theta = $pickup->longitude - $address->longitude;
+    $dist = sin(deg2rad($pickup->latitude)) * sin(deg2rad($address->latitude)) +
+            cos(deg2rad($pickup->latitude)) * cos(deg2rad($address->latitude)) * cos(deg2rad($theta));
+    $dist = acos($dist);
+    $dist = rad2deg($dist);
+    $km = $dist * 60 * 1.1515 * 1.609344; // Miles to KM
+
+    // Get delivery boy vehicle and rate per km
+    $vehicle = DB::table('vehicles')
+        ->where('deliveryboys_ID', $deliveryBoyId)
+        ->first();
+
+    if (!$vehicle) {
+        return response()->json(['error' => 'Vehicle for delivery boy not found.'], 404);
+    }
+
+    $ratePerKm = DB::table('vehicle_categories')
+        ->where('id', $vehicle->vehicle_type) // vehicle_type is category ID
+        ->value('per_km_charge');
+
+    if (!$ratePerKm) {
+        return response()->json(['error' => 'Per KM rate not found.'], 404);
+    }
+
+    $totalEarning = round($km * $ratePerKm, 2);
+
+    // Insert into delivery_earnings table
+    DB::table('delivery_earnings')->insert([
+        'deliveryboy_id' => $deliveryBoyId,
+        'suborder_id' => $suborder->id,
+        'distance_km' => round($km, 2),
+        'rate_per_km' => $ratePerKm,
+        'total_earning' => $totalEarning,
+        'created_at' => now(),
+        'updated_at' => now()
+    ]);
+} catch (Exception $e) {
+    return response()->json(['error' => 'Failed to calculate and insert delivery earnings.'], 500);
 }
+
+
+
+
+
+
+
+    return response()->json(['message' => 'Order accepted and marked assigned successfully.']);
+}
+
 
 
 
@@ -1066,9 +1261,85 @@ public function confirmPickup(Request $request, $suborderId)
         'longitude' => 'required|numeric',
     ]);
 
+    // Get vendor info
+    $vendor = DB::table('vendors')->where('id', $suborder->vendor_ID)->first();
+    if (!$vendor) {
+        return response()->json(['error' => 'Vendor not found.'], 404);
+    }
+
+    if ($vendor->vendor_type === 'API Vendor') {
+        // Join to get API vendor details
+        $apiVendor = DB::table('vendors')
+            ->join('shops', 'vendors.id', '=', 'shops.vendors_ID')
+            ->join('branches', 'shops.id', '=', 'branches.shops_ID')
+            ->join('apivendor', 'branches.id', '=', 'apivendor.branches_ID')
+            ->where('vendors.id', $suborder->vendor_ID)
+            ->where('branches.id', $suborder->branch_ID)
+            ->select(
+                'apivendor.id as apivendor_ID',
+                'apivendor.api_base_url',
+                'apivendor.api_key',
+                'apivendor.response_format'
+            )
+            ->first();
+
+        if (!$apiVendor) {
+            return response()->json(['error' => 'API vendor configuration not found for the given branch and vendor.'], 404);
+        }
+
+        // Get API method for "confirm-pickup"
+        $apiMethod = DB::table('apimethods')
+            ->where('apivendor_ID', $apiVendor->apivendor_ID)
+            ->where('method_name', 'mark-pickup') // exact name
+            ->select('endpoint', 'http_method')
+            ->first();
+
+        if (!$apiMethod) {
+            return response()->json(['error' => 'API method for confirm-pickup not found.'], 404);
+        }
+
+        $vendorOrderId = $suborder->vendor_order_id;
+        if (!$vendorOrderId) {
+            return response()->json(['error' => 'Vendor order ID is missing for this suborder.'], 400);
+        }
+
+        $endpoint = str_replace('{id}', $vendorOrderId, $apiMethod->endpoint);
+        $fullUrl = rtrim($apiVendor->api_base_url, '/') . '/' . ltrim($endpoint, '/');
+
+        try {
+            $httpMethod = strtolower($apiMethod->http_method);
+
+            Log::info("Calling vendor pickup API [{$httpMethod}] on URL: {$fullUrl}");
+
+            $response = match ($httpMethod) {
+                'post' => Http::post($fullUrl),
+                'put' => Http::put($fullUrl),
+                'get' => Http::get($fullUrl),
+                'delete' => Http::delete($fullUrl),
+                default => null,
+            };
+
+            Log::info("Vendor pickup response status: " . ($response ? $response->status() : 'null'));
+            Log::info("Vendor pickup response body: " . ($response ? $response->body() : 'null'));
+
+            if (!$response || !$response->successful()) {
+                return response()->json([
+                    'error' => 'Failed to confirm pickup on API vendor server. Vendor responded with an error.'
+                ], 500);
+            }
+        } catch (\Exception $e) {
+            Log::error("Vendor API error: " . $e->getMessage());
+            return response()->json([
+                'error' => 'Failed to connect to API vendor server.'
+            ], 500);
+        }
+    }
+
+    // Update local suborder status
     $suborder->status = 'picked_up';
     $suborder->save();
 
+    // Create tracking entry
     LocationTracking::create([
         'latitude' => $request->latitude,
         'longitude' => $request->longitude,
@@ -1076,6 +1347,7 @@ public function confirmPickup(Request $request, $suborderId)
         'suborders_ID' => $suborder->id,
     ]);
 
+    // Final response (UNCHANGED as you requested)
     return response()->json(['message' => 'Order picked up successfully.']);
 }
 
@@ -1083,54 +1355,136 @@ public function confirmPickup(Request $request, $suborderId)
 
 
 
+ public function addVehicleCategory(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'name' => 'required|string|max:50',
+            'per_km_charge' => 'required|numeric|min:0',
+            'description' => 'nullable|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => false,
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $categoryId = DB::table('vehicle_categories')->insertGetId([
+            'name' => $request->name,
+            'per_km_charge' => $request->per_km_charge,
+            'description' => $request->description,
+            'created_at' => now(),
+            'updated_at' => now()
+        ]);
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Vehicle category added successfully.',
+            'data' => ['id' => $categoryId]
+        ]);
+    }
+
+    // ✅ GET: Get all vehicle categories (for dropdown)
+    public function getVehicleCategory()
+    {
+        $categories = DB::table('vehicle_categories')
+            ->select('id', 'name', 'per_km_charge', 'description')
+            ->get();
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Vehicle categories fetched successfully.',
+            'data' => $categories
+        ]);
+    }
+
+
 
 
 public function updateLocation(Request $request, $suborderId)
 {
-    try {
-        $suborder = Suborder::findOrFail($suborderId);
+    $suborder = Suborder::findOrFail($suborderId);
 
-        // Allow location update only if status is valid
-      /*   $allowedStatuses = ['handover_confirmed', 'in_transit'];
-        if (!in_array($suborder->status, $allowedStatuses)) {
-            return response()->json([
-                'error' => 'Order location cannot be updated in the current state.',
-                'current_status' => $suborder->status,
-            ], 400);
-        } */
-
-        // Validate request
-        $validatedData = $request->validate([
-            'latitude' => 'required|numeric|between:-90,90',
-            'longitude' => 'required|numeric|between:-180,180',
-        ]);
-
-        // Create location entry
-        LocationTracking::create([
-            'latitude' => $validatedData['latitude'],
-            'longitude' => $validatedData['longitude'],
-            'status' => 'in_transit',
-            'suborders_ID' => $suborder->id,
-        ]);
-
-        return response()->json(['message' => 'Location updated successfully.']);
-    } catch (\Illuminate\Validation\ValidationException $ve) {
-        return response()->json([
-            'error' => 'Validation failed.',
-            'messages' => $ve->errors(),
-        ], 422);
-    } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-        return response()->json([
-            'error' => 'Suborder not found.',
-        ], 404);
-    } catch (Exception $e) {
-        Log::error('Error updating location: ' . $e->getMessage());
-        return response()->json([
-            'error' => 'Something went wrong while updating location.',
-        ], 500);
+    if ($suborder->status !== 'handover_confirmed' && $suborder->status !== 'in_transit') {
+        return response()->json(['error' => 'Order location cannot be updated in the current state.'], 400);
     }
-}
 
+    $request->validate([
+        'latitude' => 'required|numeric|between:-90,90', 
+        'longitude' => 'required|numeric|between:-180,180',
+    ], [
+        'latitude.required' => 'Latitude is required.',
+        'latitude.numeric' => 'Latitude must be a numeric value.',
+        'latitude.between' => 'Latitude must be between -90 and 90.',
+        'longitude.required' => 'Longitude is required.',
+        'longitude.numeric' => 'Longitude must be a numeric value.',
+        'longitude.between' => 'Longitude must be between -180 and 180.',
+    ]);
+
+    // Save location
+    LocationTracking::create([
+        'latitude' => $request->latitude,
+        'longitude' => $request->longitude,
+        'status' => 'in_transit',
+        'suborders_ID' => $suborder->id,
+    ]);
+
+    // Get vendor info
+    $vendor = DB::table('vendors')->where('id', $suborder->vendor_ID)->first();
+
+    if ($vendor && $vendor->vendor_type === 'API Vendor') {
+        try {
+            // Get API Vendor config
+            $apiVendor = DB::table('vendors')
+                ->join('shops', 'vendors.id', '=', 'shops.vendors_ID')
+                ->join('branches', 'shops.id', '=', 'branches.shops_ID')
+                ->join('apivendor', 'branches.id', '=', 'apivendor.branches_ID')
+                ->where('vendors.id', $suborder->vendor_ID)
+                ->where('branches.id', $suborder->branch_ID)
+                ->select(
+                    'apivendor.id as apivendor_ID',
+                    'apivendor.api_base_url',
+                    'apivendor.api_key',
+                    'apivendor.response_format'
+                )
+                ->first();
+
+            if ($apiVendor) {
+                // Get API method for "in_transit"
+                $apiMethod = DB::table('apimethods')
+                    ->where('apivendor_ID', $apiVendor->apivendor_ID)
+                    ->where('method_name', 'mark-in_transit')
+                    ->select('endpoint', 'http_method')
+                    ->first();
+
+                if ($apiMethod && $suborder->vendor_order_id) {
+                    $endpoint = str_replace('{id}', $suborder->vendor_order_id, $apiMethod->endpoint);
+                    $fullUrl = rtrim($apiVendor->api_base_url, '/') . '/' . ltrim($endpoint, '/');
+                    $httpMethod = strtolower($apiMethod->http_method);
+
+                    Log::info("Calling external vendor API ($httpMethod): $fullUrl");
+
+                    // Make the API call
+                    $response = match ($httpMethod) {
+                        'post' => Http::post($fullUrl),
+                        'put' => Http::put($fullUrl),
+                        'get' => Http::get($fullUrl),
+                        'delete' => Http::delete($fullUrl),
+                        default => null,
+                    };
+
+                    Log::info("Vendor API response: " . ($response ? $response->body() : 'null'));
+                }
+            }
+        } catch (Exception $e) {
+            Log::error("Failed to call in_transit API for vendor: " . $e->getMessage());
+            // Don’t return error to frontend — keep existing response format
+        }
+    }
+
+    return response()->json(['message' => 'Location updated successfully.']);
+}
 
 
 
@@ -1148,7 +1502,7 @@ public function reachDestination(Request $request, $deliveryBoyId, $suborderId)
 
     $suborder = Suborder::findOrFail($suborderId);
 
-    if ($suborder->status !== 'in_transit' && $suborder->status !== 'handover_confirmed') {
+    if ($suborder->status !== 'handover_confirmed') {
         return response()->json(['error' => 'Order must be in transit/handover_confirmed before reaching destination.'], 400);
     }
 
@@ -1180,9 +1534,85 @@ public function confirmPaymentByDeliveryBoy($suborderId)
         return response()->json(['error' => 'Customer must confirm payment first.'], 400);
     }
 
+    // Fetch vendor info
+    $vendor = DB::table('vendors')->where('id', $suborder->vendor_ID)->first();
+    if (!$vendor) {
+        return response()->json(['error' => 'Vendor not found.'], 404);
+    }
+
+    if ($vendor->vendor_type === 'API Vendor') {
+        // Get API vendor configuration
+        $apiVendor = DB::table('vendors')
+            ->join('shops', 'vendors.id', '=', 'shops.vendors_ID')
+            ->join('branches', 'shops.id', '=', 'branches.shops_ID')
+            ->join('apivendor', 'branches.id', '=', 'apivendor.branches_ID')
+            ->where('vendors.id', $suborder->vendor_ID)
+            ->where('branches.id', $suborder->branch_ID)
+            ->select(
+                'apivendor.id as apivendor_ID',
+                'apivendor.api_base_url',
+                'apivendor.api_key',
+                'apivendor.response_format'
+            )
+            ->first();
+
+        if (!$apiVendor) {
+            return response()->json(['error' => 'API vendor configuration not found.'], 404);
+        }
+
+        // Get API method for confirm payment by delivery boy
+        $apiMethod = DB::table('apimethods')
+            ->where('apivendor_ID', $apiVendor->apivendor_ID)
+            ->where('method_name', 'mark-confirm-payment-by-deliveryboy')
+            ->select('endpoint', 'http_method')
+            ->first();
+
+        if (!$apiMethod) {
+            return response()->json(['error' => 'API method for delivery boy payment confirmation not found.'], 404);
+        }
+
+        $vendorOrderId = $suborder->vendor_order_id;
+        if (!$vendorOrderId) {
+            return response()->json(['error' => 'Vendor order ID is missing.'], 400);
+        }
+
+        // Construct endpoint URL
+        $endpoint = str_replace('{id}', $vendorOrderId, $apiMethod->endpoint);
+        $fullUrl = rtrim($apiVendor->api_base_url, '/') . '/' . ltrim($endpoint, '/');
+
+        try {
+            $httpMethod = strtolower($apiMethod->http_method);
+            Log::info("Calling API method [{$httpMethod}] on URL: {$fullUrl}");
+
+            $response = match ($httpMethod) {
+                'post' => Http::post($fullUrl),
+                'put' => Http::put($fullUrl),
+                'get' => Http::get($fullUrl),
+                'delete' => Http::delete($fullUrl),
+                default => null,
+            };
+
+            Log::info("Vendor response status: " . ($response ? $response->status() : 'null'));
+            Log::info("Vendor response body: " . ($response ? $response->body() : 'null'));
+
+            if (!$response || !$response->successful()) {
+                return response()->json([
+                    'error' => 'Failed to confirm payment on API vendor server. Vendor responded with an error.'
+                ], 500);
+            }
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Failed to connect to API vendor server.',
+                'exception' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // Update local suborder payment status
     $suborder->payment_status = 'confirmed_by_deliveryboy';
     $suborder->save();
 
+    // DO NOT CHANGE THIS RESPONSE
     return response()->json(['message' => 'Payment confirmed by delivery boy.']);
 }
 
